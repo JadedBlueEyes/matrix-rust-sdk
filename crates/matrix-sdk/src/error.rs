@@ -133,6 +133,27 @@ impl HttpError {
         }
     }
 
+    /// Whether this error guarantees that the server didn't process the
+    /// request, meaning that it is safe to retry it even if it isn't
+    /// idempotent.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn is_request_unprocessed(&self) -> bool {
+        match self {
+            // The connection couldn't be established, so the request was never
+            // sent.
+            HttpError::Reqwest(error) => error.is_connect(),
+
+            // The server explicitly refused to process the request because of
+            // rate-limiting.
+            HttpError::Api(_) => self.as_client_api_error().is_some_and(|error| {
+                error.status_code == StatusCode::TOO_MANY_REQUESTS
+                    || matches!(error.error_kind(), Some(ErrorKind::LimitExceeded(_)))
+            }),
+
+            _ => false,
+        }
+    }
+
     /// Try to destructure the error into a user-interactive auth info.
     ///
     /// Some requests require user-interactive auth, doing such a request will
@@ -822,6 +843,34 @@ mod tests {
         HttpError::RefreshToken(RefreshTokenError::MatrixAuth(std::sync::Arc::new(HttpError::Api(
             Box::new(FromHttpResponseError::Server(api_error)),
         ))))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn api_error(status_code: StatusCode, body: &str) -> HttpError {
+        let response = http::Response::builder().status(status_code).body(body.as_bytes()).unwrap();
+        let api_error = RumaApiError::from_http_response(response);
+
+        HttpError::Api(Box::new(FromHttpResponseError::Server(api_error)))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_is_request_unprocessed() {
+        // Rate-limited requests weren't processed, even when the body isn't a
+        // Matrix error, e.g. when coming from a reverse proxy.
+        let body = r#"{"errcode": "M_LIMIT_EXCEEDED", "error": "Too many requests"}"#;
+        assert!(api_error(StatusCode::TOO_MANY_REQUESTS, body).is_request_unprocessed());
+        assert!(api_error(StatusCode::TOO_MANY_REQUESTS, "").is_request_unprocessed());
+
+        // Server errors might have happened after the request was processed.
+        for status_code in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::GATEWAY_TIMEOUT,
+            StatusCode::REQUEST_TIMEOUT,
+        ] {
+            assert!(!api_error(status_code, "").is_request_unprocessed());
+        }
     }
 
     #[test]

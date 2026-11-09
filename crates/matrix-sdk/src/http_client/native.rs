@@ -116,7 +116,12 @@ impl HttpClient {
             err: &HttpError,
             backon_suggested_timeout: Option<Duration>,
             has_retry_limit: bool,
+            non_idempotent: bool,
         ) -> Option<Duration> {
+            if non_idempotent && !err.is_request_unprocessed() {
+                return None;
+            }
+
             match err.retry_kind() {
                 RetryKind::Transient { retry_after } => {
                     // This bit is somewhat tricky but it's necessary so we
@@ -164,11 +169,12 @@ impl HttpClient {
         };
 
         let has_retry_limit = config.retry_limit.is_some();
+        let non_idempotent = config.non_idempotent;
 
         send_request
             .retry(make_backoff(&config))
             .adjust(|err, backon_suggested_timeout| {
-                adjust_backoff(err, backon_suggested_timeout, has_retry_limit)
+                adjust_backoff(err, backon_suggested_timeout, has_retry_limit, non_idempotent)
             })
             .notify(|error, duration| {
                 warn!("Error {error:?} received, will retry in {duration:?}");

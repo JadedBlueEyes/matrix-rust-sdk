@@ -49,6 +49,7 @@ pub struct RequestConfig {
     pub(crate) max_concurrent_requests: Option<NonZeroUsize>,
     pub(crate) force_auth: bool,
     pub(crate) skip_auth: bool,
+    pub(crate) non_idempotent: bool,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -62,6 +63,7 @@ impl Debug for RequestConfig {
             force_auth,
             max_concurrent_requests,
             skip_auth: skip_optional_auth,
+            non_idempotent,
         } = self;
 
         let mut res = fmt.debug_struct("RequestConfig");
@@ -79,6 +81,10 @@ impl Debug for RequestConfig {
             res.field("skip_optional_auth", &true);
         }
 
+        if *non_idempotent {
+            res.field("non_idempotent", &true);
+        }
+
         res.finish()
     }
 }
@@ -93,6 +99,7 @@ impl Default for RequestConfig {
             max_concurrent_requests: Default::default(),
             force_auth: false,
             skip_auth: false,
+            non_idempotent: false,
         }
     }
 }
@@ -124,6 +131,21 @@ impl RequestConfig {
     #[must_use]
     pub fn retry_limit(mut self, retry_limit: usize) -> Self {
         self.retry_limit = Some(retry_limit);
+        self
+    }
+
+    /// Mark the request as non-idempotent, i.e. sending it twice could have a
+    /// different effect than sending it once (e.g. creating two rooms).
+    ///
+    /// This means the request won't be retried if the server could have,
+    /// theoretically, processed it - for example on a client timeout.
+    /// It will still be retried as normal otherwise.
+    ///
+    /// The other retry settings, like [`RequestConfig::retry_limit`], still
+    /// apply.
+    #[must_use]
+    pub fn non_idempotent(mut self) -> Self {
+        self.non_idempotent = true;
         self
     }
 
@@ -226,5 +248,10 @@ mod tests {
 
         let cfg = RequestConfig::short_retry();
         assert_eq!(cfg.retry_limit, Some(3));
+
+        let cfg = RequestConfig::new();
+        assert!(!cfg.non_idempotent);
+        let cfg = cfg.non_idempotent();
+        assert!(cfg.non_idempotent);
     }
 }
